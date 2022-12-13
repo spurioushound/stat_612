@@ -1,0 +1,216 @@
+---
+title: "Data 612 Graduate Project:\nExploration of Armed Conflict\n Location & Event Database (ACLED)"
+author: "Stephen Hornbeck"
+date: "2022-10-28"
+output: html_document
+---
+
+## 1. Loading the necessary packages
+```{r setup, include=T}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+library(stringr)
+```
+
+### 1.a Importing the Dataset
+
+Here is the [link](https://acleddata.com/) to the data repository:
+
+
+```{r}
+d<-read_csv("Africa_1997-2022_Oct28.csv")
+```
+### 1.b: Getting Summary Of Data
+
+```{r}
+
+is_tibble(d)
+
+dim(d)
+
+glimpse(d)
+
+```
+YEAR: Variable for Year (Numeric)
+
+COUNTRY: Country where event happened (Character)
+
+EVENT_TYPE: Category of event type (Character)
+
+FATALITIES: Number of fatalities (Numeric)
+
+ACTOR1: Belligerent in Event (Character)
+
+NOTES: Additional notes about the event (Character)
+
+
+
+
+## 2: Exploring Number of Events
+
+First we can take a look at how many events are included by country. I want to look at the distribution of this to see if most countries have a similar number of events or if there is a skew.
+
+```{r}
+d %>% group_by(COUNTRY) %>% count(.) %>% ggplot(.) + geom_histogram(aes(x=n))
+```
+
+
+The data is very right skewed with most countries having less than 5,000 events in the database and one country having almost 40,000 in the database.
+
+Let's look at this in terms of trends. How many events are recorded over the different years, is there a trend to how many events are being recorded each year? 
+
+```{r}
+d %>% group_by(YEAR) %>% count(.) %>% ggplot(.) + geom_line(aes(x=YEAR,y=n)) + ylab("Number of Events") + 
+  theme_classic()
+```
+
+Events definitely seem to be increasing over the years. There seems to be a substantive jump after 2010. It would be worth investigating what that jump is from.
+
+But first, we should check to see if maybe this is a collection issue. Let's look at the number of countries by year to see if the number included in the database has increased over the years.
+
+
+```{r}
+d %>% group_by(YEAR) %>% summarise(n_countries=length(unique(COUNTRY))) %>% 
+  ggplot(.) + geom_bar(aes(x=YEAR,y=n_countries),stat="identity")
+```
+
+*It is not a mechanism, for the most part, of more countries being added in over time. What might be the underlying difference causing the increase over time? Let's look at the event type, maybe something is happening there*
+
+
+```{r}
+
+d %>% group_by(YEAR,EVENT_TYPE) %>% count(.) %>% ggplot(.) + geom_line(aes(x=YEAR,y=n,color=EVENT_TYPE)) + ylab("Number of Events") + 
+  theme_classic()
+```
+
+*Alright, so it looks like protests have been dominating the spike as well as battles and violence against civilians*
+
+```{r}
+top_ten<-d %>% filter(EVENT_TYPE %in% c("Protests", 
+                                                     "Violence against civilians","Battles")) %>% group_by(COUNTRY) %>% count() %>% arrange(desc(n)) %>% ungroup() %>% 
+  slice(1:10)
+
+top_ten
+```
+
+*Lets focus on the top 10 countries here. I am curious to see how things have changed over time and what is driving the events in these different countries*
+
+```{r}
+
+#
+d %>% filter(EVENT_TYPE %in% c("Protests", 
+                                                     "Violence against civilians","Battles")) %>% filter(COUNTRY %in% top_ten$COUNTRY) %>% group_by(COUNTRY,EVENT_TYPE) %>% count() %>% arrange(desc(n)) 
+
+
+d %>% filter(EVENT_TYPE %in% c("Protests", 
+                                                     "Violence against civilians","Battles")) %>% filter(COUNTRY %in% top_ten$COUNTRY) %>% group_by(YEAR,COUNTRY,EVENT_TYPE) %>% count() %>% arrange(desc(n)) %>% 
+  ggplot(.) + geom_line(aes(x=YEAR,y=n,color=EVENT_TYPE)) + facet_wrap(COUNTRY~.) +
+  theme_classic()
+
+```
+
+
+
+
+
+
+
+```{r}
+
+alg<-d %>% filter(COUNTRY=="Algeria")
+
+length(unique(alg$ACTOR1))
+
+```
+
+
+
+```{r}
+alg<-alg %>% mutate(ACTOR1_new=case_when(str_detect(ACTOR1,"Military*")~"Algerian Military",
+                                    str_detect(ACTOR1,"Police*")~"Police",
+                                    str_detect(ACTOR1,"Protest*")~"Protestors",
+                                    str_detect(ACTOR1,"Riot*")~"Protestors",
+                                    str_detect(ACTOR1,"Sala*|Islam*|Milita")~"Militia/Armed Group",
+                                TRUE~ACTOR1))
+
+length(unique(alg$ACTOR1_new))
+
+alg<-alg %>% mutate(ACTOR1_new=forcats::fct_lump(ACTOR1_new,n = 9,other_level = "Other"))
+
+length(unique(alg$ACTOR1_new))
+
+```
+
+# Violence by Actor
+
+Looking at the events is interesting but what if we want to look at how these translate into deaths of individuals and who is primarily responsible?
+
+We could first group by the actors and year, sum the fatalities by group, sum the total events, then get a ratio of fatalities to event by group. This would show us what groups were causing the most violence in the countries and would tell us in Algeria whether protests were turning violent.
+
+```{r}
+violence<-alg %>% filter(COUNTRY=="Algeria") %>% group_by(YEAR,ACTOR1_new) %>% dplyr::summarise(count=n(),fatalities=sum(FATALITIES),Fatality_to_Event=fatalities/count) 
+
+violence %>%  ggplot(.) + geom_line(aes(x=YEAR,y=count,color=ACTOR1_new),stat="identity",position="dodge")+
+  theme_classic()
+
+```
+
+This first chart shows us the number of events by reduced actor. We can see higher militia and military activity in the 90s which corresponds to the civil war but then a huge spike in protests following events surrounding the president.
+
+```{r}
+violence%>% ggplot(.) + 
+  geom_line(aes(x=YEAR,y=Fatality_to_Event,color=ACTOR1_new),stat="identity",position="dodge")+
+  theme_classic()
+```
+
+So what we can see from this chart is that protests have mostly been non-violence and most events ending in violence come from militias and from the National Army.
+
+So let's model this data now. I am curious to see how these events correspond to instability and GDP of Algeria. First I am going to summarize the events fatalities by events by year.
+
+
+```{r}
+violence2<-violence %>% group_by(YEAR,) %>% summarise(count=sum(count),fatalities=sum(fatalities),Fatality_to_Event=fatalities/count)
+
+print(violence2,n=10)
+
+
+```
+
+I then downloaded the World Bank GDP growth rates, gathered the wide data and transformed it to long data and ran a simple linear regression of the results.
+
+```{r}
+read_csv("API_NY.GDP.MKTP.KD.ZG_DS2_en_csv_v2_4751609.csv") %>% filter(str_detect(`Country Name`,"Algeria")) %>%
+  select(-`Country Name`,-`Country Code`,-`Indicator Name`,-`Indicator Code`) %>%
+  gather(.,key="YEAR",value="GDP_Growth") %>% mutate(YEAR=as.numeric(YEAR)) %>% left_join(violence2,.,by="YEAR") %>% ggplot(.,aes(y=log(GDP_Growth),x=log(Fatality_to_Event))) + geom_point()+
+  geom_smooth(method=lm)
+```
+
+
+This is...unexpected. This model (a log x log model) shows that the higher the fatality per event, the higher the GDP growth. So you would expect times of high violence and instability to lead to more growth. This however requires some country level knowledge and the times of high violence corresponded to economic liberalization efforts and privatizing industries in the 1990s.
+
+
+## 3. Mapping Results
+
+This dataset is too large and mapping all of the data points will either crash the computer or slow down the analysis to a crawl. One option is to sample the data and present a sample of the data. 
+
+This mapping with leaflet also provides options to pop-ups in the points where we can include the notes about the events.
+
+```{r}
+library(leaflet)
+newest<-alg %>% filter(YEAR==2019)
+
+small<-newest %>% slice(sample(1:nrow(newest),50))
+small %>% leaflet(.) %>% addTiles() %>% addMarkers(lng=~LONGITUDE, lat=~LATITUDE, popup=~NOTES)
+
+```
+
+
+Another alternative is to focus on some key attributes to look at one the map. Here I put only want to look at the number of protests that were attended by "masses" of people.
+
+```{r}
+newest %>% filter(str_detect(NOTES,"masses")) %>% leaflet(.) %>% addTiles() %>%  
+  addMarkers(lng=~LONGITUDE, lat=~LATITUDE, popup=~NOTES)
+```
+
+
